@@ -9,16 +9,35 @@ import dgl.nn as dglnn
 class GATLayer(nn.Module):
     def __init__(self, g,in_dim, out_dim, num_heads):
         super(GATLayer, self).__init__()
+        g = dgl.add_self_loop(g)
+        self.g = g
         self.num_heads = num_heads
         self.gat = dglnn.GATConv(in_dim, out_dim, num_heads)
         self.fc = nn.Linear(num_heads * out_dim, out_dim)
-        g = dgl.add_self_loop(g)
-        self.g = g
-       
-    def forward(self,h):
+        self.attn_fc = nn.Linear(2 * out_dim, 1, bias=False)
+        
+        
+    def edge_attention(self, edges):
+        z2 = torch.cat([edges.src['z'], edges.dst['z']], dim=1)
+        a = self.attn_fc(z2)
+        return {'e': a}
+
+    def message_func(self, edges):
+        return {'z': edges.src['z'], 'e': edges.data['e']}
+
+    def reduce_func(self, nodes):
+        alpha = F.softmax(nodes.mailbox['e'], dim=1)
+        h = torch.sum(alpha * nodes.mailbox['z'], dim=1)
+        return {'h': h}
+
+    def forward(self, h):
         h = self.gat(self.g, h).view(-1, self.num_heads * h.size(-1))
-        h = self.fc(h)
-        return h
+        z = self.fc(h)
+        self.g.ndata['z'] = z
+        self.g.apply_edges(self.edge_attention)
+        self.g.update_all(self.message_func, self.reduce_func)
+        return self.g.ndata.pop('h')
+       
     
 def remove_random_edges(g, fraction=0.1):
     # 获取图的边列表
